@@ -2,6 +2,7 @@
 
 from target.adapter import (
     HttpTargetAdapter,
+    ImportTargetAdapter,
     MockTargetAdapter,
     PatchableTargetAdapter,
     TargetAdapter,
@@ -9,6 +10,7 @@ from target.adapter import (
 
 __all__ = [
     "HttpTargetAdapter",
+    "ImportTargetAdapter",
     "MockTargetAdapter",
     "PatchableTargetAdapter",
     "TargetAdapter",

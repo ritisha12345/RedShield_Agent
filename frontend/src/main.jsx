@@ -1,24 +1,38 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 
-import { createScan, getScan, scanStreamUrl } from "./api";
+import { createScan, getScan, getScanReport, scanStreamUrl } from "./api";
 import "./styles.css";
 
 const EVENT_TYPES = [
+  "scan_started",
   "attack_generated",
+  "attacks_generated",
+  "attack_started",
+  "attack_completed",
+  "judge_completed",
   "violation_found",
+  "analysis_completed",
+  "patch_proposed",
   "patch_applied",
+  "verification_started",
+  "verification_completed",
   "round_completed",
+  "report_generated",
   "scan_completed",
   "scan_failed"
 ];
 
 const DEFAULT_FORM = {
+  app_name: "",
   app_category: "customer_support",
   system_prompt: "",
+  normal_use_cases: "",
+  restricted_behaviors: "",
+  competitors: "",
   attacks_per_category: 1,
   success_threshold: 0.05,
-  max_rounds: 1,
+  max_rounds: 2,
   mock_target_response: "Mock target response: request handled safely."
 };
 
@@ -92,6 +106,10 @@ function SetupPage({ onScanCreated }) {
     try {
       const response = await createScan({
         ...form,
+        app_name: form.app_name || undefined,
+        normal_use_cases: splitLines(form.normal_use_cases),
+        restricted_behaviors: splitLines(form.restricted_behaviors),
+        competitors: splitLines(form.competitors),
         attacks_per_category: Number(form.attacks_per_category),
         success_threshold: Number(form.success_threshold),
         max_rounds: Number(form.max_rounds)
@@ -113,6 +131,14 @@ function SetupPage({ onScanCreated }) {
 
       <form className="panel setup-form" onSubmit={submitScan}>
         <label>
+          <span>App name</span>
+          <input
+            value={form.app_name}
+            onChange={(event) => updateField("app_name", event.target.value)}
+          />
+        </label>
+
+        <label>
           <span>App category</span>
           <input
             value={form.app_category}
@@ -130,6 +156,37 @@ function SetupPage({ onScanCreated }) {
             required
           />
         </label>
+
+        <div className="form-row">
+          <label>
+            <span>Normal use cases</span>
+            <textarea
+              value={form.normal_use_cases}
+              onChange={(event) =>
+                updateField("normal_use_cases", event.target.value)
+              }
+              rows={4}
+            />
+          </label>
+          <label>
+            <span>Restricted behaviors</span>
+            <textarea
+              value={form.restricted_behaviors}
+              onChange={(event) =>
+                updateField("restricted_behaviors", event.target.value)
+              }
+              rows={4}
+            />
+          </label>
+          <label>
+            <span>Competitors</span>
+            <textarea
+              value={form.competitors}
+              onChange={(event) => updateField("competitors", event.target.value)}
+              rows={4}
+            />
+          </label>
+        </div>
 
         <div className="form-row">
           <label>
@@ -232,7 +289,7 @@ function LiveScanPage({ scanId }) {
         return [...current, parsed];
       });
 
-      if (parsed.type === "scan_completed" || parsed.type === "scan_failed") {
+      if (isTerminalEvent(parsed.type)) {
         source.close();
         setConnectionState("closed");
         getScan(scanId)
@@ -299,7 +356,7 @@ function LiveScanPage({ scanId }) {
         <EventList events={events} />
       </div>
 
-      {scan?.status === "completed" || scan?.status === "failed" ? (
+      {isTerminalStatus(scan?.status) ? (
         <div className="action-row">
           <button
             className="primary-button"
@@ -323,7 +380,7 @@ function ReportPage({ scanId }) {
     setLoading(true);
     setError("");
 
-    getScan(scanId)
+    getScanReport(scanId)
       .then((nextScan) => {
         if (active) {
           setScan(nextScan);
@@ -515,6 +572,10 @@ function EventDetail({ event }) {
     return <p>{data.error || "Scan failed."}</p>;
   }
 
+  if (event.message) {
+    return <p>{event.message}</p>;
+  }
+
   return <p>{JSON.stringify(data)}</p>;
 }
 
@@ -590,6 +651,14 @@ function buildLiveMetrics(events, scan) {
   };
 }
 
+function isTerminalEvent(type) {
+  return type === "scan_completed" || type === "scan_failed";
+}
+
+function isTerminalStatus(status) {
+  return ["completed", "completed_with_risks", "failed"].includes(status);
+}
+
 function parseSsePayload(payload) {
   try {
     return JSON.parse(payload);
@@ -614,6 +683,13 @@ function formatTime(value) {
     minute: "2-digit",
     second: "2-digit"
   });
+}
+
+function splitLines(value) {
+  return value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function humanize(value) {

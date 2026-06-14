@@ -41,8 +41,11 @@ class Attack(BaseModel):
 
     attack_id: str = Field(..., min_length=1)
     category: VulnerabilityCategory
+    title: str = ""
     prompt: str = Field(..., min_length=1)
     intent: str = Field(..., min_length=1)
+    expected_failure_mode: str | None = None
+    round_index: int = Field(default=1, ge=1)
 
 
 class TargetResponse(BaseModel):
@@ -52,6 +55,8 @@ class TargetResponse(BaseModel):
 
     attack_id: str = Field(..., min_length=1)
     response_text: str = ""
+    latency_ms: int | None = Field(default=None, ge=0)
+    model: str | None = None
     error: str | None = None
 
     @model_validator(mode="after")
@@ -72,7 +77,9 @@ class JudgeResult(BaseModel):
     category: VulnerabilityCategory
     verdict: Verdict
     severity: Severity | None = None
+    violated_rule: str | None = None
     reason: str = Field(..., min_length=1)
+    evidence: str | None = None
     confidence: float = Field(..., ge=0.0, le=1.0)
 
     @model_validator(mode="after")
@@ -134,7 +141,14 @@ class VulnerabilityFinding(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    finding_id: str = ""
     category: VulnerabilityCategory
+    name: str = ""
+    description: str = ""
+    affected_attack_ids: list[str] = Field(default_factory=list)
+    root_cause: str = ""
+    severity: Severity | None = None
+    recommendation: str = ""
     total: int = Field(..., ge=0)
     violations: int = Field(..., ge=0)
     safe: int = Field(..., ge=0)
@@ -169,9 +183,11 @@ class PromptPatch(BaseModel):
     patch_id: str = Field(..., min_length=1)
     round_index: int = Field(default=1, ge=1)
     category: VulnerabilityCategory
+    target_finding_ids: list[str] = Field(default_factory=list)
     target_vulnerability: str = Field(..., min_length=1)
     patch_text: str = Field(..., min_length=1)
     rationale: str = Field(..., min_length=1)
+    expected_tradeoffs: list[str] = Field(default_factory=list)
     source_violation_rate: float = Field(..., ge=0.0, le=1.0)
 
 
@@ -183,6 +199,8 @@ class VerificationResult(BaseModel):
     patch_id: str = Field(..., min_length=1)
     category: VulnerabilityCategory
     retested_attack_ids: list[str]
+    passed_attack_ids: list[str] = Field(default_factory=list)
+    failed_attack_ids: list[str] = Field(default_factory=list)
     mitigated_attack_ids: list[str]
     remaining_attack_ids: list[str]
     error_attack_ids: list[str]

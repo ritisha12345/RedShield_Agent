@@ -5,7 +5,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from utils.settings import (
     get_cors_allowed_origins,
-    get_scan_execution_mode,
     load_dotenv_if_available,
 )
 
@@ -13,7 +12,7 @@ from utils.settings import (
 load_dotenv_if_available()
 
 from api.routes import router
-from firebase.firestore import firestore_readiness_from_env
+from utils.readiness import deployment_readiness
 
 app = FastAPI(title="RedShield API", version="0.1.0")
 app.add_middleware(
@@ -30,19 +29,12 @@ app.include_router(router)
 def health() -> dict:
     """Return liveness and deployment configuration readiness."""
 
-    try:
-        execution_mode = get_scan_execution_mode()
-        queue_status = "required" if execution_mode == "celery" else "disabled"
-    except ValueError:
-        execution_mode = "invalid"
-        queue_status = "misconfigured"
+    readiness = deployment_readiness()
 
     return {
-        "status": "ok" if execution_mode != "invalid" else "degraded",
+        "status": readiness["status"],
         "version": app.version,
-        "execution_mode": execution_mode,
-        "dependencies": {
-            "queue": queue_status,
-            "firestore": firestore_readiness_from_env(),
-        },
+        "execution_mode": readiness["checks"]["execution_mode"]["mode"],
+        "dependencies": readiness["checks"],
+        "blocking_issues": readiness["blocking_issues"],
     }

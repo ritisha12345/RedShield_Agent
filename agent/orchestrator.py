@@ -90,16 +90,35 @@ def run_scan(
                 "intent": attack.intent,
             },
         )
+    _emit_event(
+        event_callback,
+        "attacks_generated",
+        {"count": len(attacks), "categories": sorted({attack.category for attack in attacks})},
+    )
 
     target_responses: list[TargetResponse] = []
     judge_results: list[JudgeResult] = []
 
     for attack in attacks:
+        _emit_event(
+            event_callback,
+            "attack_started",
+            {"attack_id": attack.attack_id, "category": attack.category},
+        )
         target_response = _execute_attack(
             target_adapter=target_adapter,
             attack=attack,
         )
         target_responses.append(target_response)
+        _emit_event(
+            event_callback,
+            "attack_completed",
+            {
+                "attack_id": attack.attack_id,
+                "category": attack.category,
+                "error": target_response.error,
+            },
+        )
 
         judge_result = _judge_attack_response(
             response_judge=response_judge,
@@ -109,6 +128,16 @@ def run_scan(
             judge_client=judge_client,
         )
         judge_results.append(judge_result)
+        _emit_event(
+            event_callback,
+            "judge_completed",
+            {
+                "attack_id": judge_result.attack_id,
+                "category": judge_result.category,
+                "verdict": judge_result.verdict,
+                "severity": judge_result.severity,
+            },
+        )
         if judge_result.verdict == "violation":
             _emit_event(
                 event_callback,
@@ -126,6 +155,14 @@ def run_scan(
         judge_results=judge_results,
     )
     category_breakdown = analyze_results(judge_results)
+    _emit_event(
+        event_callback,
+        "analysis_completed",
+        {
+            "violations": baseline_summary.violations,
+            "violation_rate": baseline_summary.violation_rate,
+        },
+    )
 
     baseline_successful_attacks = _successful_attacks(
         attacks=attacks,
@@ -152,7 +189,11 @@ def run_scan(
             judge_results=judge_results,
             attack_ids=unresolved_attack_ids,
         )
-        current_findings = analyze_results(current_judge_results)
+        current_findings = _findings_with_verification_evidence(
+            findings=analyze_results(current_judge_results),
+            verification_results=verification_results,
+            unresolved_attack_ids=unresolved_attack_ids,
+        )
         round_patches = patch_generator(
             original_system_prompt=working_system_prompt,
             findings=current_findings,
@@ -164,6 +205,16 @@ def run_scan(
 
         patches.extend(round_patches)
         for patch in round_patches:
+            _emit_event(
+                event_callback,
+                "patch_proposed",
+                {
+                    "patch_id": patch.patch_id,
+                    "round_index": patch.round_index,
+                    "category": patch.category,
+                    "target_vulnerability": patch.target_vulnerability,
+                },
+            )
             _emit_event(
                 event_callback,
                 "patch_applied",
@@ -181,15 +232,42 @@ def run_scan(
                 if attack.attack_id in unresolved_attack_ids
                 and attack.category == patch.category
             ]
+            patched_system_prompt = _apply_patch_texts(
+                system_prompt=working_system_prompt,
+                patches=[patch],
+            )
+            _emit_event(
+                event_callback,
+                "verification_started",
+                {
+                    "patch_id": patch.patch_id,
+                    "category": patch.category,
+                    "retested_attack_count": len(successful_attacks_for_patch),
+                },
+            )
             verification_result = verify_patch(
                 successful_attacks=successful_attacks_for_patch,
                 patch=patch,
                 target_adapter=target_adapter,
+                patched_system_prompt=patched_system_prompt,
                 response_judge=response_judge,
                 judge_model=judge_model,
                 judge_client=judge_client,
             )
             verification_results.append(verification_result)
+            _emit_event(
+                event_callback,
+                "verification_completed",
+                {
+                    "patch_id": verification_result.patch_id,
+                    "category": verification_result.category,
+                    "retested_attack_count": len(verification_result.retested_attack_ids),
+                    "mitigated_attack_count": len(verification_result.mitigated_attack_ids),
+                    "remaining_attack_count": len(verification_result.remaining_attack_ids),
+                    "errors": verification_result.errors,
+                    "after_violation_rate": verification_result.after_violation_rate,
+                },
+            )
 
             for attack_id in verification_result.mitigated_attack_ids:
                 unresolved_attack_ids.discard(attack_id)
@@ -225,6 +303,15 @@ def run_scan(
         findings=category_breakdown,
         patches=patches,
         verification_results=verification_results,
+    )
+    _emit_event(
+        event_callback,
+        "report_generated",
+        {
+            "initial_violation_rate": final_summary.initial_violation_rate,
+            "final_violation_rate": final_summary.final_violation_rate,
+            "remaining_risks": final_summary.remaining_risks,
+        },
     )
     _emit_event(
         event_callback,
@@ -526,6 +613,58 @@ def _judge_results_for_attack_ids(
     """Select judge results for unresolved attacks."""
 
     return [result for result in judge_results if result.attack_id in attack_ids]
+
+
+def _findings_with_verification_evidence(
+    *,
+    findings: list[VulnerabilityFinding],
+    verification_results: list[VerificationResult],
+    unresolved_attack_ids: set[str],
+) -> list[VulnerabilityFinding]:
+    """Attach failed verification evidence to findings for the next patch round."""
+
+    if not verification_results or not unresolved_attack_ids:
+        return findings
+
+    evidence_by_category: dict[str, list[str]] = {}
+    for result in verification_results:
+        for evidence in result.evidence:
+            if evidence.mitigated or evidence.attack_id not in unresolved_attack_ids:
+                continue
+            details = (
+                f"{evidence.attack_id}: previous patch {result.patch_id} "
+                f"left verdict={evidence.patched_verdict}. {evidence.reason}"
+            )
+            if evidence.patched_response_excerpt:
+                details = (
+                    f"{details} Patched response excerpt: "
+                    f"{evidence.patched_response_excerpt}"
+                )
+            evidence_by_category.setdefault(evidence.category, []).append(details)
+
+    if not evidence_by_category:
+        return findings
+
+    enriched_findings: list[VulnerabilityFinding] = []
+    for finding in findings:
+        extra_examples = evidence_by_category.get(finding.category, [])
+        if not extra_examples:
+            enriched_findings.append(finding)
+            continue
+        enriched_findings.append(
+            finding.model_copy(
+                update={
+                    "representative_examples": (
+                        finding.representative_examples + extra_examples
+                    )[:6],
+                    "description": (
+                        f"{finding.description} Prior patch verification still "
+                        "failed for this category."
+                    ).strip(),
+                }
+            )
+        )
+    return enriched_findings
 
 
 def _apply_patch_texts(

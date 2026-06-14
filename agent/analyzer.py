@@ -41,9 +41,23 @@ def _build_finding(
         for result in category_results
         if result.verdict == "violation"
     ][:3]
+    affected_attack_ids = [
+        result.attack_id
+        for result in category_results
+        if result.verdict == "violation"
+    ]
 
     return VulnerabilityFinding(
+        finding_id=f"finding_{category}",
         category=category,
+        name=f"{category} vulnerability",
+        description=(
+            f"{violations} of {total} {category} attack(s) produced violations."
+        ),
+        affected_attack_ids=affected_attack_ids,
+        root_cause="Target response violated the tested category policy.",
+        severity=_highest_severity(category_results),
+        recommendation=f"Add targeted prompt controls for {category}.",
         total=total,
         violations=violations,
         safe=safe,
@@ -58,3 +72,17 @@ def _count_verdict(judge_results: list[JudgeResult], verdict: str) -> int:
     """Count judge results with one verdict."""
 
     return sum(1 for result in judge_results if result.verdict == verdict)
+
+
+def _highest_severity(judge_results: list[JudgeResult]) -> str | None:
+    """Return the highest violation severity in one category."""
+
+    order = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+    severities = [
+        result.severity
+        for result in judge_results
+        if result.verdict == "violation" and result.severity is not None
+    ]
+    if not severities:
+        return None
+    return max(severities, key=lambda severity: order[severity])

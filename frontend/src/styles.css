@@ -290,6 +290,12 @@ textarea:focus {
   background: #edf7e8;
 }
 
+.status-completed_with_risks {
+  border-color: #b48a34;
+  color: #70510f;
+  background: #fff6d8;
+}
+
 .status-failed {
   border-color: #b73535;
   color: #8c2424;

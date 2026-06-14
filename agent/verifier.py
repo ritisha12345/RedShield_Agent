@@ -26,6 +26,7 @@ def verify_patch(
     successful_attacks: Iterable[Attack],
     patch: PromptPatch,
     target_adapter: TargetAdapter,
+    patched_system_prompt: str | None = None,
     response_judge: ResponseJudge = judge_response,
     judge_model: str | None = None,
     judge_client: Any | None = None,
@@ -46,6 +47,7 @@ def verify_patch(
             target_adapter=target_adapter,
             attack=attack,
             patch=patch,
+            patched_system_prompt=patched_system_prompt,
         )
 
         if target_response.error:
@@ -117,6 +119,8 @@ def verify_patch(
         patch_id=patch.patch_id,
         category=patch.category,
         retested_attack_ids=retested_attack_ids,
+        passed_attack_ids=mitigated_attack_ids,
+        failed_attack_ids=remaining_attack_ids,
         mitigated_attack_ids=mitigated_attack_ids,
         remaining_attack_ids=remaining_attack_ids,
         error_attack_ids=error_attack_ids,
@@ -138,6 +142,7 @@ def _execute_with_patch(
     target_adapter: TargetAdapter,
     attack: Attack,
     patch: PromptPatch,
+    patched_system_prompt: str | None,
 ) -> TargetResponse:
     """Execute an attack through the adapter's patch-aware path."""
 
@@ -149,7 +154,19 @@ def _execute_with_patch(
         )
 
     try:
-        return execute_with_patch(attack, patch)
+        return execute_with_patch(
+            attack,
+            patch,
+            patched_system_prompt=patched_system_prompt,
+        )
+    except TypeError:
+        try:
+            return execute_with_patch(attack, patch)
+        except Exception as error:
+            return TargetResponse(
+                attack_id=attack.attack_id,
+                error=f"Patched target adapter failed: {error}",
+            )
     except Exception as error:
         return TargetResponse(
             attack_id=attack.attack_id,

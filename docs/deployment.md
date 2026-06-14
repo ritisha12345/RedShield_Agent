@@ -12,7 +12,7 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
 Required production variables:
 
 - `OPENAI_API_KEY`
-- `CORS_ALLOWED_ORIGINS=https://<netlify-site>`
+- `CORS_ALLOWED_ORIGINS=https://redshieldagent.netlify.app`
 - `REDSHIELD_SCAN_EXECUTION_MODE=celery`
 - `REDIS_URL`, or both `CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND`
 - `REDSHIELD_FIRESTORE_ENABLED=true`
@@ -22,6 +22,9 @@ Required production variables:
   `GOOGLE_APPLICATION_CREDENTIALS_B64`, `FIREBASE_SERVICE_ACCOUNT_JSON`, or
   `FIREBASE_SERVICE_ACCOUNT_B64`
 
+Use `.env.production.example` as the Railway variable checklist. Do not upload
+`.env` itself.
+
 Create a second Railway worker service from the same repo/image and override
 the start command:
 
@@ -30,6 +33,9 @@ celery -A worker worker --loglevel=info
 ```
 
 Attach both services to the same Redis service and Firestore project.
+
+After setting variables, call `/health`. A deploy is not ready until
+`status` is `ok` and `blocking_issues` is empty.
 
 ## Frontend on Netlify
 
@@ -42,7 +48,20 @@ Set this Netlify environment variable:
 VITE_API_BASE_URL=https://<railway-api-service>
 ```
 
-Also add the Netlify site origin to the backend `CORS_ALLOWED_ORIGINS` value.
+Also add the Netlify site origin, `https://redshieldagent.netlify.app`, to the
+backend `CORS_ALLOWED_ORIGINS` value.
+Use `frontend/.env.production.example` as the Netlify variable checklist.
+
+## SSE Production Check
+
+The backend sets SSE-friendly headers:
+
+- `Cache-Control: no-cache, no-transform`
+- `Connection: keep-alive`
+- `X-Accel-Buffering: no`
+
+After deployment, start a scan from the Netlify frontend and confirm the live
+feed receives events until `completed`, `completed_with_risks`, or `failed`.
 
 ## Local Production-Like Stack
 

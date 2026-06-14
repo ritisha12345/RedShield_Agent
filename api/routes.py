@@ -3,88 +3,41 @@
 from __future__ import annotations
 
 import json
-import os
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
 
 from agent.orchestrator import run_scan
+from api.schemas import (
+    ScanCreateRequest,
+    ScanCreateResponse,
+    ScanReportResponse,
+    ScanStatusResponse,
+)
 from api.storage import SCAN_STORE, ScanEvent, ScanRecord
-from target import HttpTargetAdapter, MockTargetAdapter, TargetAdapter
-from utils.settings import get_scan_execution_mode, get_target_timeout_seconds
+import tasks.runner as scan_runner
+from tasks.runner import sanitize_error, scan_settings
+from utils.settings import get_scan_execution_mode
 
 
 router = APIRouter()
 SCAN_EXECUTOR = ThreadPoolExecutor(max_workers=4)
 
 
-class ScanCreateRequest(BaseModel):
-    """Request body for starting a development scan."""
-
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-    app_category: str = Field(..., min_length=1)
-    system_prompt: str = Field(..., min_length=1)
-    attacks_per_category: int = Field(default=1, ge=1)
-    success_threshold: float = Field(default=0.05, ge=0.0, le=1.0)
-    max_rounds: int = Field(default=1, ge=0)
-    target_url: str | None = Field(default=None, min_length=1)
-    mock_target_response: str = Field(
-        default="Mock target response: request handled safely.",
-        min_length=1,
-    )
-
-
-class ScanCreateResponse(BaseModel):
-    """Response body returned after a scan is queued."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    scan_id: str
-    status: str
-    summary: dict | None
-    status_url: str
-    stream_url: str
-    report_url: str
-
-
-class ScanStatusResponse(BaseModel):
-    """Response body for retrieving an in-memory scan."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    scan_id: str
-    status: str
-    created_at: str
-    completed_at: str | None
-    summary: dict | None
-    markdown_report: str | None
-    error: str | None
-
-
-class ScanReportResponse(BaseModel):
-    """Response body for retrieving a completed report."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    scan_id: str
-    status: str
-    summary: dict | None
-    markdown_report: str | None
-    error: str | None
-
-
 @router.post("/scans", response_model=ScanCreateResponse)
 def create_scan(request: ScanCreateRequest) -> ScanCreateResponse:
     """Queue a scan in-process and return immediately."""
 
-    record = SCAN_STORE.create_scan()
+    record = SCAN_STORE.create_scan(
+        app_name=request.app_name,
+        app_category=request.app_category,
+        settings=scan_settings(request),
+    )
     try:
         _enqueue_scan(record.scan_id, request)
     except Exception as error:
-        sanitized_error = _sanitize_error(error)
+        sanitized_error = sanitize_error(error)
         SCAN_STORE.fail_scan(scan_id=record.scan_id, error=sanitized_error)
         raise HTTPException(
             status_code=503,
@@ -97,6 +50,7 @@ def create_scan(request: ScanCreateRequest) -> ScanCreateResponse:
         summary=record.summary,
         status_url=f"/scans/{record.scan_id}",
         stream_url=f"/scans/{record.scan_id}/stream",
+        events_url=f"/scans/{record.scan_id}/events",
         report_url=f"/scans/{record.scan_id}/report",
     )
 
@@ -120,8 +74,19 @@ def stream_scan(scan_id: str) -> StreamingResponse:
     return StreamingResponse(
         _scan_event_stream(scan_id),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache"},
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
+
+
+@router.get("/scans/{scan_id}/events")
+def stream_scan_events(scan_id: str) -> StreamingResponse:
+    """Compatibility endpoint matching the documented SSE route."""
+
+    return stream_scan(scan_id)
 
 
 @router.get("/scans/{scan_id}/report", response_model=ScanReportResponse)
@@ -145,50 +110,15 @@ def _enqueue_scan(scan_id: str, request: ScanCreateRequest) -> None:
 
     execution_mode = get_scan_execution_mode()
     if execution_mode == "thread":
-        SCAN_EXECUTOR.submit(_run_scan_job, scan_id, request)
+        scan_runner.run_scan = run_scan
+        SCAN_EXECUTOR.submit(scan_runner.run_scan_job, scan_id, request)
         return
+    if not SCAN_STORE.has_shared_persistence():
+        raise RuntimeError("Celery scan execution requires shared persistence.")
 
     from tasks.scans import run_scan_task
 
     run_scan_task.delay(scan_id, request.model_dump(mode="json"))
-
-
-def _run_scan_job(scan_id: str, request: ScanCreateRequest) -> None:
-    """Run an orchestrator scan and persist sanitized in-memory results."""
-
-    SCAN_STORE.mark_running(scan_id)
-
-    def emit_event(event_type: str, data: dict) -> None:
-        SCAN_STORE.append_event(
-            scan_id=scan_id,
-            event_type=event_type,
-            data=data,
-        )
-
-    try:
-        result = run_scan(
-            app_category=request.app_category,
-            system_prompt=request.system_prompt,
-            target_adapter=_build_target_adapter(request),
-            attacks_per_category=request.attacks_per_category,
-            success_threshold=request.success_threshold,
-            max_rounds=request.max_rounds,
-            event_callback=emit_event,
-        )
-        SCAN_STORE.complete_scan(
-            scan_id=scan_id,
-            summary=result.summary.model_dump(mode="json"),
-            markdown_report=result.markdown_report,
-        )
-    except Exception as error:
-        sanitized_error = _sanitize_error(error)
-        SCAN_STORE.append_event(
-            scan_id=scan_id,
-            event_type="scan_failed",
-            data={"error": sanitized_error},
-        )
-        SCAN_STORE.fail_scan(scan_id=scan_id, error=sanitized_error)
-
 
 def _scan_event_stream(scan_id: str):
     """Yield Server-Sent Events for one scan."""
@@ -202,7 +132,7 @@ def _scan_event_stream(scan_id: str):
         if record is None:
             break
         if not events:
-            if record.status in {"completed", "failed"}:
+            if record.status in {"completed", "completed_with_risks", "failed"}:
                 break
             yield ": keep-alive\n\n"
             continue
@@ -211,7 +141,7 @@ def _scan_event_stream(scan_id: str):
             last_event_id = event.event_id
             yield _format_sse_event(event)
 
-        if record.status in {"completed", "failed"}:
+        if record.status in {"completed", "completed_with_risks", "failed"}:
             break
 
 
@@ -221,7 +151,12 @@ def _status_response(record: ScanRecord) -> ScanStatusResponse:
     return ScanStatusResponse(
         scan_id=record.scan_id,
         status=record.status,
+        stage=record.stage,
+        progress_current=record.progress_current,
+        progress_total=record.progress_total,
+        metrics=record.metrics,
         created_at=record.created_at.isoformat(),
+        started_at=record.started_at.isoformat() if record.started_at else None,
         completed_at=record.completed_at.isoformat() if record.completed_at else None,
         summary=record.summary,
         markdown_report=record.markdown_report,
@@ -235,32 +170,3 @@ def _format_sse_event(event: ScanEvent) -> str:
     payload = json.dumps(event.model_dump(mode="json"), separators=(",", ":"))
     return f"id: {event.event_id}\nevent: {event.type}\ndata: {payload}\n\n"
 
-
-def _sanitize_error(error: Exception) -> str:
-    """Return an error safe for API responses."""
-
-    return f"Scan failed: {error.__class__.__name__}"
-
-
-def _build_target_adapter(request: ScanCreateRequest) -> TargetAdapter:
-    """Build the target adapter from request or deployment configuration."""
-
-    target_url = request.target_url or os.getenv("REDSHIELD_TARGET_URL")
-    if target_url:
-        return HttpTargetAdapter(
-            endpoint_url=target_url,
-            timeout_seconds=get_target_timeout_seconds(),
-            headers=_target_headers_from_env(),
-        )
-
-    return MockTargetAdapter(default_response=request.mock_target_response)
-
-
-def _target_headers_from_env() -> dict[str, str]:
-    """Return optional target auth headers from environment variables."""
-
-    header_name = os.getenv("REDSHIELD_TARGET_AUTH_HEADER")
-    header_value = os.getenv("REDSHIELD_TARGET_AUTH_TOKEN")
-    if not header_name or not header_value:
-        return {}
-    return {header_name: header_value}

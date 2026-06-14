@@ -21,6 +21,13 @@ export async function getScan(scanId) {
   return readJsonResponse(response);
 }
 
+export async function getScanReport(scanId) {
+  const response = await fetch(
+    apiUrl(`/scans/${encodeURIComponent(scanId)}/report`)
+  );
+  return readJsonResponse(response);
+}
+
 export function scanStreamUrl(scanId) {
   return apiUrl(`/scans/${encodeURIComponent(scanId)}/stream`);
 }

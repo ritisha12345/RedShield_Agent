@@ -133,8 +133,10 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
-        self.assertEqual(body["status"], "ok")
+        self.assertIn(body["status"], {"ok", "degraded"})
         self.assertIn("firestore", body["dependencies"])
+        self.assertIn("queue", body["dependencies"])
+        self.assertIn("blocking_issues", body)
 
     def test_cors_allows_local_frontend_origin(self) -> None:
         response = self.client.options(

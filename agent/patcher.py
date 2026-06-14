@@ -202,6 +202,7 @@ def _build_prompt_patches(
                 patch_id=f"round_{round_index:03d}_patch_{index:03d}_{category}",
                 round_index=round_index,
                 category=category,
+                target_finding_ids=[finding.finding_id] if finding.finding_id else [],
                 target_vulnerability=generated_patch.target_vulnerability,
                 patch_text=generated_patch.patch_text,
                 rationale=generated_patch.rationale,
