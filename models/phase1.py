@@ -87,7 +87,7 @@ class JudgeResult(BaseModel):
 
 
 class SafetySummary(BaseModel):
-    """Terminal summary for a Phase 1 safety scan."""
+    """Terminal summary for a safety scan."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -98,6 +98,11 @@ class SafetySummary(BaseModel):
     inconclusive: int = Field(..., ge=0)
     errors: int = Field(..., ge=0)
     violation_rate: float = Field(..., ge=0.0, le=1.0)
+    initial_violation_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    final_violation_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    findings: list["VulnerabilityFinding"] = Field(default_factory=list)
+    patches_applied: list["PromptPatch"] = Field(default_factory=list)
+    remaining_risks: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_counts(self) -> SafetySummary:
@@ -120,5 +125,110 @@ class SafetySummary(BaseModel):
         )
         if abs(self.violation_rate - expected_rate) > 0.000001:
             raise ValueError("violation_rate must equal violations/completed_attacks.")
+
+        return self
+
+
+class VulnerabilityFinding(BaseModel):
+    """Deterministic finding for one vulnerability category."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    category: VulnerabilityCategory
+    total: int = Field(..., ge=0)
+    violations: int = Field(..., ge=0)
+    safe: int = Field(..., ge=0)
+    inconclusive: int = Field(..., ge=0)
+    errors: int = Field(..., ge=0)
+    violation_rate: float = Field(..., ge=0.0, le=1.0)
+    dominant: bool = False
+    representative_examples: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_finding_counts(self) -> VulnerabilityFinding:
+        """Ensure category-level counts are internally consistent."""
+
+        counted_results = self.violations + self.safe + self.inconclusive + self.errors
+        if counted_results != self.total:
+            raise ValueError(
+                "violations + safe + inconclusive + errors must equal total."
+            )
+
+        expected_rate = self.violations / self.total if self.total else 0.0
+        if abs(self.violation_rate - expected_rate) > 0.000001:
+            raise ValueError("violation_rate must equal violations/total.")
+
+        return self
+
+
+class PromptPatch(BaseModel):
+    """Structured prompt patch proposal for one vulnerability category."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    patch_id: str = Field(..., min_length=1)
+    round_index: int = Field(default=1, ge=1)
+    category: VulnerabilityCategory
+    target_vulnerability: str = Field(..., min_length=1)
+    patch_text: str = Field(..., min_length=1)
+    rationale: str = Field(..., min_length=1)
+    source_violation_rate: float = Field(..., ge=0.0, le=1.0)
+
+
+class VerificationResult(BaseModel):
+    """Result of re-testing previously successful attacks against one patch."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    patch_id: str = Field(..., min_length=1)
+    category: VulnerabilityCategory
+    retested_attack_ids: list[str]
+    mitigated_attack_ids: list[str]
+    remaining_attack_ids: list[str]
+    error_attack_ids: list[str]
+    errors: int = Field(..., ge=0)
+    before_violation_rate: float = Field(..., ge=0.0, le=1.0)
+    after_violation_rate: float = Field(..., ge=0.0, le=1.0)
+    improvement: float = Field(..., ge=-1.0, le=1.0)
+    mitigated: bool
+
+    @model_validator(mode="after")
+    def validate_verification_counts(self) -> VerificationResult:
+        """Ensure verification attack IDs describe one coherent retest."""
+
+        if self.errors != len(self.error_attack_ids):
+            raise ValueError("errors must equal len(error_attack_ids).")
+
+        resolved_count = len(self.mitigated_attack_ids) + len(
+            self.remaining_attack_ids
+        ) + len(self.error_attack_ids)
+        if resolved_count != len(self.retested_attack_ids):
+            raise ValueError(
+                "mitigated_attack_ids + remaining_attack_ids + errors must "
+                "match retested_attack_ids."
+            )
+
+        expected_before = 1.0 if self.retested_attack_ids else 0.0
+        if abs(self.before_violation_rate - expected_before) > 0.000001:
+            raise ValueError(
+                "before_violation_rate must be 1.0 when attacks are retested "
+                "and 0.0 when none are retested."
+            )
+
+        unresolved_count = len(self.remaining_attack_ids) + len(self.error_attack_ids)
+        expected_after = (
+            unresolved_count / len(self.retested_attack_ids)
+            if self.retested_attack_ids
+            else 0.0
+        )
+        if abs(self.after_violation_rate - expected_after) > 0.000001:
+            raise ValueError(
+                "after_violation_rate must equal remaining or errored retests "
+                "divided by total retests."
+            )
+
+        expected_improvement = self.before_violation_rate - self.after_violation_rate
+        if abs(self.improvement - expected_improvement) > 0.000001:
+            raise ValueError("improvement must equal before_violation_rate minus after.")
 
         return self
