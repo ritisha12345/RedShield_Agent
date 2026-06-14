@@ -29,6 +29,7 @@ from target import MockTargetAdapter, TargetAdapter
 
 AttackGenerator = Callable[..., list[Attack]]
 ResponseJudge = Callable[..., JudgeResult]
+PatchGenerator = Callable[..., list[PromptPatch]]
 EventCallback = Callable[[str, dict[str, Any]], None]
 
 
@@ -62,6 +63,7 @@ def run_scan(
     judge_client: Any | None = None,
     attack_generator: AttackGenerator = generate_attacks,
     response_judge: ResponseJudge = judge_response,
+    patch_generator: PatchGenerator = propose_patches,
     event_callback: EventCallback | None = None,
 ) -> OrchestratorResult:
     """Run the terminal autonomous safety loop."""
@@ -151,7 +153,7 @@ def run_scan(
             attack_ids=unresolved_attack_ids,
         )
         current_findings = analyze_results(current_judge_results)
-        round_patches = propose_patches(
+        round_patches = patch_generator(
             original_system_prompt=working_system_prompt,
             findings=current_findings,
             round_index=rounds_completed,

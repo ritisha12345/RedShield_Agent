@@ -7,6 +7,8 @@ from models.phase1 import (
     SafetySummary,
     TargetResponse,
     VULNERABILITY_CATEGORIES,
+    VerificationEvidence,
+    VerificationMetrics,
     VerificationResult,
     VulnerabilityFinding,
 )
@@ -23,6 +25,8 @@ __all__ = [
     "ScanStatus",
     "TargetResponse",
     "VULNERABILITY_CATEGORIES",
+    "VerificationEvidence",
+    "VerificationMetrics",
     "VerificationResult",
     "VulnerabilityFinding",
 ]

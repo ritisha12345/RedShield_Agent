@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from models import Attack, VULNERABILITY_CATEGORIES
+from utils.openai_client import call_openai_json
 from utils.prompt_guard import xml_wrap_user_content
-from utils.retry import retry_call
 
 
 ATTACKER_TEMPERATURE = 0.8
 ATTACKER_MAX_TOKENS = 2500
 DEFAULT_ATTACKER_MODEL = "gpt-4o"
+ATTACKER_MODEL_ENV = "ATTACKER_MODEL"
 
 
 class _AttackList(BaseModel):
@@ -39,32 +39,24 @@ def generate_attacks(
     if attacks_per_category < 1:
         raise ValueError("attacks_per_category must be at least 1")
 
-    attacker_model = model or os.getenv("ATTACKER_MODEL", DEFAULT_ATTACKER_MODEL)
-    openai_client = client or _build_openai_client()
-
     guarded_context = _build_guarded_context(
         app_category=app_category,
         system_prompt=system_prompt,
         attacks_per_category=attacks_per_category,
     )
 
-    def operation() -> list[Attack]:
-        response = openai_client.chat.completions.create(
-            model=attacker_model,
-            temperature=ATTACKER_TEMPERATURE,
-            max_tokens=ATTACKER_MAX_TOKENS,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": _attacker_system_prompt()},
-                {"role": "user", "content": guarded_context},
-            ],
-        )
-        content = response.choices[0].message.content
-        if not content:
-            raise ValueError("Attacker returned an empty response.")
-        return _parse_attacks(content)
-
-    attacks = retry_call(operation)
+    content = call_openai_json(
+        system_prompt=_attacker_system_prompt(),
+        user_prompt=guarded_context,
+        env_model_name=ATTACKER_MODEL_ENV,
+        default_model=DEFAULT_ATTACKER_MODEL,
+        temperature=ATTACKER_TEMPERATURE,
+        max_tokens=ATTACKER_MAX_TOKENS,
+        client=client,
+        model=model,
+        empty_response_message="Attacker returned an empty response.",
+    )
+    attacks = _parse_attacks(content)
     _validate_category_coverage(attacks)
     return attacks
 
@@ -94,20 +86,6 @@ def demo_generate_attacks() -> list[Attack]:
         print(f"[{attack.category}] {attack.attack_id}: {attack.prompt}")
 
     return attacks
-
-
-def _build_openai_client() -> Any:
-    """Create an OpenAI client lazily so imports stay testable."""
-
-    try:
-        from openai import OpenAI
-    except ModuleNotFoundError as error:
-        raise RuntimeError(
-            "The openai package is required for attack generation. "
-            "Install project dependencies with `pip install -r requirements.txt`."
-        ) from error
-
-    return OpenAI()
 
 
 def _attacker_system_prompt() -> str:

@@ -6,7 +6,15 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from agent.judge import judge_response
-from models import Attack, JudgeResult, PromptPatch, TargetResponse, VerificationResult
+from models import (
+    Attack,
+    JudgeResult,
+    PromptPatch,
+    TargetResponse,
+    VerificationEvidence,
+    VerificationMetrics,
+    VerificationResult,
+)
 from target import TargetAdapter
 
 
@@ -31,6 +39,7 @@ def verify_patch(
     mitigated_attack_ids: list[str] = []
     remaining_attack_ids: list[str] = []
     error_attack_ids: list[str] = []
+    evidence: list[VerificationEvidence] = []
 
     for attack in attacks_to_retest:
         target_response = _execute_with_patch(
@@ -41,6 +50,15 @@ def verify_patch(
 
         if target_response.error:
             error_attack_ids.append(attack.attack_id)
+            evidence.append(
+                _build_evidence(
+                    attack=attack,
+                    patched_verdict="error",
+                    mitigated=False,
+                    reason=target_response.error,
+                    target_response=target_response,
+                )
+            )
             continue
 
         judge_result = _judge_patched_response(
@@ -58,6 +76,16 @@ def verify_patch(
         else:
             error_attack_ids.append(attack.attack_id)
 
+        evidence.append(
+            _build_evidence(
+                attack=attack,
+                patched_verdict=judge_result.verdict,
+                mitigated=judge_result.verdict == "safe",
+                reason=judge_result.reason,
+                target_response=target_response,
+            )
+        )
+
     retested_attack_ids = [attack.attack_id for attack in attacks_to_retest]
     before_violation_rate = 1.0 if retested_attack_ids else 0.0
     unresolved = len(remaining_attack_ids) + len(error_attack_ids)
@@ -67,6 +95,23 @@ def verify_patch(
         else 0.0
     )
     improvement = before_violation_rate - after_violation_rate
+    vulnerabilities_mitigated = (
+        [patch.category] if retested_attack_ids and unresolved == 0 else []
+    )
+    vulnerabilities_remaining = [patch.category] if unresolved else []
+    metrics = VerificationMetrics(
+        total_retested=len(retested_attack_ids),
+        baseline_violations=len(retested_attack_ids),
+        patched_violations=unresolved,
+        mitigated_count=len(mitigated_attack_ids),
+        remaining_count=len(remaining_attack_ids),
+        error_count=len(error_attack_ids),
+        before_violation_rate=before_violation_rate,
+        after_violation_rate=after_violation_rate,
+        violation_rate_reduction=improvement,
+        vulnerabilities_mitigated=vulnerabilities_mitigated,
+        vulnerabilities_remaining=vulnerabilities_remaining,
+    )
 
     return VerificationResult(
         patch_id=patch.patch_id,
@@ -79,6 +124,11 @@ def verify_patch(
         before_violation_rate=before_violation_rate,
         after_violation_rate=after_violation_rate,
         improvement=improvement,
+        violation_rate_reduction=improvement,
+        vulnerabilities_mitigated=vulnerabilities_mitigated,
+        vulnerabilities_remaining=vulnerabilities_remaining,
+        evidence=evidence,
+        metrics=metrics,
         mitigated=bool(retested_attack_ids) and unresolved == 0,
     )
 
@@ -133,3 +183,35 @@ def _judge_patched_response(
             reason=f"Patched judge execution failed: {error}",
             confidence=0.0,
         )
+
+
+def _build_evidence(
+    *,
+    attack: Attack,
+    patched_verdict: str,
+    mitigated: bool,
+    reason: str,
+    target_response: TargetResponse,
+) -> VerificationEvidence:
+    """Build evidence for one baseline-to-patched comparison."""
+
+    return VerificationEvidence(
+        attack_id=attack.attack_id,
+        category=attack.category,
+        baseline_verdict="violation",
+        patched_verdict=patched_verdict,
+        mitigated=mitigated,
+        reason=reason,
+        patched_response_excerpt=_response_excerpt(target_response.response_text),
+    )
+
+
+def _response_excerpt(response_text: str, max_length: int = 240) -> str | None:
+    """Return a compact response excerpt for verification evidence."""
+
+    text = " ".join(response_text.split())
+    if not text:
+        return None
+    if len(text) <= max_length:
+        return text
+    return f"{text[: max_length - 3].rstrip()}..."

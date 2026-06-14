@@ -3,7 +3,7 @@
 import unittest
 
 from agent.orchestrator import format_terminal_summary, run_scan
-from models import Attack, JudgeResult, TargetResponse
+from models import Attack, JudgeResult, PromptPatch, TargetResponse
 from target import MockTargetAdapter
 
 
@@ -57,6 +57,21 @@ def _fake_judge(**kwargs):
     )
 
 
+def _fake_patch_generator(**kwargs):
+    round_index = kwargs.get("round_index", 1)
+    return [
+        PromptPatch(
+            patch_id=f"round_{round_index:03d}_patch_001_jailbreak",
+            round_index=round_index,
+            category="jailbreak",
+            target_vulnerability="jailbreak produced a violation.",
+            patch_text="Refuse jailbreak attempts while preserving safe help.",
+            rationale="Targets the observed jailbreak failure.",
+            source_violation_rate=1.0,
+        )
+    ]
+
+
 class OrchestratorTests(unittest.TestCase):
     def test_successful_completion_mitigates_violation(self) -> None:
         result = run_scan(
@@ -65,6 +80,7 @@ class OrchestratorTests(unittest.TestCase):
             target_adapter=MockTargetAdapter(),
             attack_generator=_fake_attack_generator,
             response_judge=_fake_judge,
+            patch_generator=_fake_patch_generator,
         )
 
         self.assertEqual(len(result.attacks), 2)
@@ -88,6 +104,7 @@ class OrchestratorTests(unittest.TestCase):
             target_adapter=MockTargetAdapter(),
             attack_generator=_fake_attack_generator,
             response_judge=_fake_judge,
+            patch_generator=_fake_patch_generator,
         )
 
         text = format_terminal_summary(result)
@@ -123,6 +140,7 @@ class OrchestratorTests(unittest.TestCase):
             target_adapter=BrokenTargetAdapter(),
             attack_generator=_fake_attack_generator,
             response_judge=judge_echo_error,
+            patch_generator=_fake_patch_generator,
         )
 
         self.assertEqual(result.summary.errors, 2)
@@ -146,6 +164,7 @@ class OrchestratorTests(unittest.TestCase):
             target_adapter=MockTargetAdapter(),
             attack_generator=_fake_attack_generator,
             response_judge=always_violates,
+            patch_generator=_fake_patch_generator,
             max_rounds=2,
             success_threshold=0.0,
         )
@@ -172,6 +191,7 @@ class OrchestratorTests(unittest.TestCase):
             target_adapter=MockTargetAdapter(),
             attack_generator=_fake_attack_generator,
             response_judge=all_safe_judge,
+            patch_generator=_fake_patch_generator,
             max_rounds=3,
             success_threshold=0.0,
         )
@@ -192,6 +212,7 @@ class OrchestratorTests(unittest.TestCase):
             target_adapter=MockTargetAdapter(),
             attack_generator=_fake_attack_generator,
             response_judge=_fake_judge,
+            patch_generator=_fake_patch_generator,
             event_callback=lambda event_type, data: events.append((event_type, data)),
         )
 

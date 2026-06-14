@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, HTTPException
@@ -11,7 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agent.orchestrator import run_scan
 from api.storage import SCAN_STORE, ScanEvent, ScanRecord
-from target import MockTargetAdapter
+from target import HttpTargetAdapter, MockTargetAdapter, TargetAdapter
+from utils.settings import get_scan_execution_mode, get_target_timeout_seconds
 
 
 router = APIRouter()
@@ -28,6 +30,7 @@ class ScanCreateRequest(BaseModel):
     attacks_per_category: int = Field(default=1, ge=1)
     success_threshold: float = Field(default=0.05, ge=0.0, le=1.0)
     max_rounds: int = Field(default=1, ge=0)
+    target_url: str | None = Field(default=None, min_length=1)
     mock_target_response: str = Field(
         default="Mock target response: request handled safely.",
         min_length=1,
@@ -44,6 +47,7 @@ class ScanCreateResponse(BaseModel):
     summary: dict | None
     status_url: str
     stream_url: str
+    report_url: str
 
 
 class ScanStatusResponse(BaseModel):
@@ -60,12 +64,32 @@ class ScanStatusResponse(BaseModel):
     error: str | None
 
 
+class ScanReportResponse(BaseModel):
+    """Response body for retrieving a completed report."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scan_id: str
+    status: str
+    summary: dict | None
+    markdown_report: str | None
+    error: str | None
+
+
 @router.post("/scans", response_model=ScanCreateResponse)
 def create_scan(request: ScanCreateRequest) -> ScanCreateResponse:
     """Queue a scan in-process and return immediately."""
 
     record = SCAN_STORE.create_scan()
-    SCAN_EXECUTOR.submit(_run_scan_job, record.scan_id, request)
+    try:
+        _enqueue_scan(record.scan_id, request)
+    except Exception as error:
+        sanitized_error = _sanitize_error(error)
+        SCAN_STORE.fail_scan(scan_id=record.scan_id, error=sanitized_error)
+        raise HTTPException(
+            status_code=503,
+            detail="Scan queue is not available.",
+        ) from error
 
     return ScanCreateResponse(
         scan_id=record.scan_id,
@@ -73,6 +97,7 @@ def create_scan(request: ScanCreateRequest) -> ScanCreateResponse:
         summary=record.summary,
         status_url=f"/scans/{record.scan_id}",
         stream_url=f"/scans/{record.scan_id}/stream",
+        report_url=f"/scans/{record.scan_id}/report",
     )
 
 
@@ -99,6 +124,35 @@ def stream_scan(scan_id: str) -> StreamingResponse:
     )
 
 
+@router.get("/scans/{scan_id}/report", response_model=ScanReportResponse)
+def get_scan_report(scan_id: str) -> ScanReportResponse:
+    """Return the final report for a scan when available."""
+
+    record = SCAN_STORE.get_scan(scan_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Scan not found.")
+    return ScanReportResponse(
+        scan_id=record.scan_id,
+        status=record.status,
+        summary=record.summary,
+        markdown_report=record.markdown_report,
+        error=record.error,
+    )
+
+
+def _enqueue_scan(scan_id: str, request: ScanCreateRequest) -> None:
+    """Queue one scan using the configured execution backend."""
+
+    execution_mode = get_scan_execution_mode()
+    if execution_mode == "thread":
+        SCAN_EXECUTOR.submit(_run_scan_job, scan_id, request)
+        return
+
+    from tasks.scans import run_scan_task
+
+    run_scan_task.delay(scan_id, request.model_dump(mode="json"))
+
+
 def _run_scan_job(scan_id: str, request: ScanCreateRequest) -> None:
     """Run an orchestrator scan and persist sanitized in-memory results."""
 
@@ -115,9 +169,7 @@ def _run_scan_job(scan_id: str, request: ScanCreateRequest) -> None:
         result = run_scan(
             app_category=request.app_category,
             system_prompt=request.system_prompt,
-            target_adapter=MockTargetAdapter(
-                default_response=request.mock_target_response,
-            ),
+            target_adapter=_build_target_adapter(request),
             attacks_per_category=request.attacks_per_category,
             success_threshold=request.success_threshold,
             max_rounds=request.max_rounds,
@@ -188,3 +240,27 @@ def _sanitize_error(error: Exception) -> str:
     """Return an error safe for API responses."""
 
     return f"Scan failed: {error.__class__.__name__}"
+
+
+def _build_target_adapter(request: ScanCreateRequest) -> TargetAdapter:
+    """Build the target adapter from request or deployment configuration."""
+
+    target_url = request.target_url or os.getenv("REDSHIELD_TARGET_URL")
+    if target_url:
+        return HttpTargetAdapter(
+            endpoint_url=target_url,
+            timeout_seconds=get_target_timeout_seconds(),
+            headers=_target_headers_from_env(),
+        )
+
+    return MockTargetAdapter(default_response=request.mock_target_response)
+
+
+def _target_headers_from_env() -> dict[str, str]:
+    """Return optional target auth headers from environment variables."""
+
+    header_name = os.getenv("REDSHIELD_TARGET_AUTH_HEADER")
+    header_value = os.getenv("REDSHIELD_TARGET_AUTH_TOKEN")
+    if not header_name or not header_value:
+        return {}
+    return {header_name: header_value}

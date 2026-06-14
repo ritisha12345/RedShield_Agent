@@ -190,6 +190,15 @@ class VerificationResult(BaseModel):
     before_violation_rate: float = Field(..., ge=0.0, le=1.0)
     after_violation_rate: float = Field(..., ge=0.0, le=1.0)
     improvement: float = Field(..., ge=-1.0, le=1.0)
+    violation_rate_reduction: float = Field(default=0.0, ge=-1.0, le=1.0)
+    vulnerabilities_mitigated: list[VulnerabilityCategory] = Field(
+        default_factory=list
+    )
+    vulnerabilities_remaining: list[VulnerabilityCategory] = Field(
+        default_factory=list
+    )
+    evidence: list["VerificationEvidence"] = Field(default_factory=list)
+    metrics: "VerificationMetrics | None" = None
     mitigated: bool
 
     @model_validator(mode="after")
@@ -230,5 +239,102 @@ class VerificationResult(BaseModel):
         expected_improvement = self.before_violation_rate - self.after_violation_rate
         if abs(self.improvement - expected_improvement) > 0.000001:
             raise ValueError("improvement must equal before_violation_rate minus after.")
+
+        if abs(self.violation_rate_reduction - expected_improvement) > 0.000001:
+            raise ValueError(
+                "violation_rate_reduction must equal before_violation_rate minus after."
+            )
+
+        if self.metrics is not None:
+            if self.metrics.total_retested != len(self.retested_attack_ids):
+                raise ValueError("metrics.total_retested must match retested attacks.")
+            if self.metrics.error_count != self.errors:
+                raise ValueError("metrics.error_count must match errors.")
+            if abs(self.metrics.violation_rate_reduction - expected_improvement) > 0.000001:
+                raise ValueError(
+                    "metrics.violation_rate_reduction must match improvement."
+                )
+
+        return self
+
+
+class VerificationEvidence(BaseModel):
+    """Evidence comparing a known baseline violation to patched behavior."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    attack_id: str = Field(..., min_length=1)
+    category: VulnerabilityCategory
+    baseline_verdict: Verdict = "violation"
+    patched_verdict: Verdict
+    mitigated: bool
+    reason: str = Field(..., min_length=1)
+    patched_response_excerpt: str | None = None
+
+
+class VerificationMetrics(BaseModel):
+    """Structured metrics for one patch verification result."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    total_retested: int = Field(..., ge=0)
+    baseline_violations: int = Field(..., ge=0)
+    patched_violations: int = Field(..., ge=0)
+    mitigated_count: int = Field(..., ge=0)
+    remaining_count: int = Field(..., ge=0)
+    error_count: int = Field(..., ge=0)
+    before_violation_rate: float = Field(..., ge=0.0, le=1.0)
+    after_violation_rate: float = Field(..., ge=0.0, le=1.0)
+    violation_rate_reduction: float = Field(..., ge=-1.0, le=1.0)
+    vulnerabilities_mitigated: list[VulnerabilityCategory] = Field(
+        default_factory=list
+    )
+    vulnerabilities_remaining: list[VulnerabilityCategory] = Field(
+        default_factory=list
+    )
+
+    @model_validator(mode="after")
+    def validate_metrics(self) -> VerificationMetrics:
+        """Ensure verification metrics describe the retest bucket counts."""
+
+        if self.baseline_violations != self.total_retested:
+            raise ValueError("baseline_violations must equal total_retested.")
+
+        resolved_count = (
+            self.mitigated_count + self.remaining_count + self.error_count
+        )
+        if resolved_count != self.total_retested:
+            raise ValueError(
+                "mitigated_count + remaining_count + error_count must equal "
+                "total_retested."
+            )
+
+        expected_before = 1.0 if self.total_retested else 0.0
+        if abs(self.before_violation_rate - expected_before) > 0.000001:
+            raise ValueError(
+                "before_violation_rate must be 1.0 when attacks are retested "
+                "and 0.0 when none are retested."
+            )
+
+        if self.patched_violations != self.remaining_count + self.error_count:
+            raise ValueError(
+                "patched_violations must equal remaining_count + error_count."
+            )
+
+        expected_after = (
+            self.patched_violations / self.total_retested
+            if self.total_retested
+            else 0.0
+        )
+        if abs(self.after_violation_rate - expected_after) > 0.000001:
+            raise ValueError(
+                "after_violation_rate must equal patched_violations/total_retested."
+            )
+
+        expected_reduction = self.before_violation_rate - self.after_violation_rate
+        if abs(self.violation_rate_reduction - expected_reduction) > 0.000001:
+            raise ValueError(
+                "violation_rate_reduction must equal before_violation_rate minus after."
+            )
 
         return self

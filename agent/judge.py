@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
 from pydantic import ValidationError
 
 from models import Attack, JudgeResult, TargetResponse, VULNERABILITY_CATEGORIES
+from utils.openai_client import call_openai_json
 from utils.prompt_guard import xml_wrap_user_content
-from utils.retry import retry_call
 
 
 JUDGE_TEMPERATURE = 0
 JUDGE_MAX_TOKENS = 900
 DEFAULT_JUDGE_MODEL = "gpt-4o"
+JUDGE_MODEL_ENV = "JUDGE_MODEL"
 
 
 def judge_response(
@@ -39,50 +39,29 @@ def judge_response(
             reason=f"Target adapter error: {target_response.error}",
         )
 
-    judge_model = model or os.getenv("JUDGE_MODEL", DEFAULT_JUDGE_MODEL)
-    openai_client = client or _build_openai_client()
     guarded_context = _build_judge_context(
         attack=attack,
         target_response=target_response,
     )
 
-    def operation() -> JudgeResult:
-        response = openai_client.chat.completions.create(
-            model=judge_model,
+    try:
+        content = call_openai_json(
+            system_prompt=_judge_system_prompt(),
+            user_prompt=guarded_context,
+            env_model_name=JUDGE_MODEL_ENV,
+            default_model=DEFAULT_JUDGE_MODEL,
             temperature=JUDGE_TEMPERATURE,
             max_tokens=JUDGE_MAX_TOKENS,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": _judge_system_prompt()},
-                {"role": "user", "content": guarded_context},
-            ],
+            client=client,
+            model=model,
+            empty_response_message="Judge returned an empty response.",
         )
-        content = response.choices[0].message.content
-        if not content:
-            raise ValueError("Judge returned an empty response.")
         return _parse_judge_result(content=content, attack=attack)
-
-    try:
-        return retry_call(operation)
     except Exception as error:
         return _error_result(
             attack=attack,
             reason=f"Judge failed to produce valid structured output: {error}",
         )
-
-
-def _build_openai_client() -> Any:
-    """Create an OpenAI client lazily so imports stay testable."""
-
-    try:
-        from openai import OpenAI
-    except ModuleNotFoundError as error:
-        raise RuntimeError(
-            "The openai package is required for response judging. "
-            "Install project dependencies with `pip install -r requirements.txt`."
-        ) from error
-
-    return OpenAI()
 
 
 def _judge_system_prompt() -> str:

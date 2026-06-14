@@ -116,6 +116,42 @@ class InMemoryPersistenceTests(unittest.TestCase):
             1,
         )
 
+    def test_store_reads_persisted_scan_events_and_report(self) -> None:
+        completed_at = datetime(2026, 6, 14, 1, tzinfo=UTC)
+        persistence = ReadablePersistence(
+            metadata=ScanMetadata(
+                scan_id="scan_1",
+                status="completed",
+                created_at=datetime(2026, 6, 14, tzinfo=UTC),
+                completed_at=completed_at,
+            ),
+            events=[
+                PersistedScanEvent(
+                    scan_id="scan_1",
+                    event_id=1,
+                    type="attack_generated",
+                    timestamp=completed_at,
+                    data={"attack_id": "a1"},
+                )
+            ],
+            report=FinalReport(
+                scan_id="scan_1",
+                summary={"final_violation_rate": 0.0},
+                markdown_report="# Report\n",
+                completed_at=completed_at,
+            ),
+        )
+        store = InMemoryScanStore(persistence=persistence)
+
+        record = store.get_scan("scan_1")
+        events = store.get_events_after(scan_id="scan_1", event_id=0)
+
+        self.assertIsNotNone(record)
+        self.assertEqual(record.status, "completed")
+        self.assertEqual(record.summary["final_violation_rate"], 0.0)
+        self.assertEqual(record.markdown_report, "# Report\n")
+        self.assertEqual(events[0].type, "attack_generated")
+
 
 class FakeSetCall:
     def __init__(self, *, path: str, data: dict[str, Any], merge: bool) -> None:
@@ -178,6 +214,40 @@ class FailingPersistence:
 
     def persist_final_report(self, report: FinalReport) -> None:
         raise RuntimeError("storage unavailable")
+
+
+class ReadablePersistence(FakePersistence):
+    def __init__(
+        self,
+        *,
+        metadata: ScanMetadata,
+        events: list[PersistedScanEvent],
+        report: FinalReport,
+    ) -> None:
+        super().__init__()
+        self._metadata = metadata
+        self._events = events
+        self._report = report
+
+    def load_scan_metadata(self, scan_id: str) -> ScanMetadata | None:
+        if scan_id == self._metadata.scan_id:
+            return self._metadata
+        return None
+
+    def load_scan_events_after(
+        self,
+        *,
+        scan_id: str,
+        event_id: int,
+    ) -> list[PersistedScanEvent]:
+        if scan_id != self._metadata.scan_id:
+            return []
+        return [event for event in self._events if event.event_id > event_id]
+
+    def load_final_report(self, scan_id: str) -> FinalReport | None:
+        if scan_id == self._report.scan_id:
+            return self._report
+        return None
 
 
 if __name__ == "__main__":

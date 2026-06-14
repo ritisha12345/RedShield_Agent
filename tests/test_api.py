@@ -109,6 +109,48 @@ class ApiTests(unittest.TestCase):
         self.assertIn("event: scan_completed", stream_text)
         self.assertNotIn("sensitive prompt", stream_text)
 
+    def test_report_endpoint_returns_completed_report(self) -> None:
+        response = self.client.post(
+            "/scans",
+            json={
+                "app_category": "customer_support",
+                "system_prompt": "sensitive prompt",
+            },
+        )
+        body = response.json()
+        self._wait_for_completed_scan(body["status_url"])
+
+        report_response = self.client.get(body["report_url"])
+
+        self.assertEqual(report_response.status_code, 200)
+        report_body = report_response.json()
+        self.assertEqual(report_body["status"], "completed")
+        self.assertEqual(report_body["markdown_report"], "# Fake Report\n")
+        self.assertNotIn("sensitive prompt", str(report_body))
+
+    def test_health_endpoint_reports_readiness(self) -> None:
+        response = self.client.get("/health")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["status"], "ok")
+        self.assertIn("firestore", body["dependencies"])
+
+    def test_cors_allows_local_frontend_origin(self) -> None:
+        response = self.client.options(
+            "/scans",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.headers["access-control-allow-origin"],
+            "http://localhost:5173",
+        )
+
     def test_get_missing_scan_returns_404(self) -> None:
         response = self.client.get("/scans/scan_missing")
 

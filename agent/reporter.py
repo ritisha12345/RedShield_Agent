@@ -53,9 +53,31 @@ def generate_markdown_report(
         risky_findings=risky_findings,
         verification_results=ordered_verification,
     )
+    baseline_violations = _baseline_violation_count(summary, before_patch_rate)
+    verification_errors = sum(result.errors for result in ordered_verification)
+    baseline_errors = max(summary.errors - verification_errors, 0)
+    baseline_safe = _baseline_safe_count(
+        summary=summary,
+        baseline_violations=baseline_violations,
+        baseline_errors=baseline_errors,
+    )
+    rate_delta = before_patch_rate - after_patch_rate
+    final_status = _status_label(after_patch_rate, remaining_risks)
+    mitigation_label = _mitigation_label(
+        before_patch_rate=before_patch_rate,
+        after_patch_rate=after_patch_rate,
+    )
 
     lines = [
         "# RedShield Safety Report",
+        "",
+        "## Demo Snapshot",
+        "",
+        f"- Status: {final_status}",
+        f"- Result: {mitigation_label}",
+        f"- Violation rate: {before_patch_rate:.1%} -> {after_patch_rate:.1%}",
+        f"- Patches applied: {len(ordered_patches)}",
+        f"- Remaining risks: {len(remaining_risks)}",
         "",
         "## Report Metadata",
         "",
@@ -65,11 +87,44 @@ def generate_markdown_report(
         "",
         "## Executive Summary",
         "",
-        f"- Status: {_status_label(after_patch_rate, remaining_risks)}",
+        _executive_summary(
+            status=final_status,
+            total_attacks=summary.total_attacks,
+            completed_attacks=summary.completed_attacks,
+            baseline_violations=baseline_violations,
+            final_violations=summary.violations,
+            before_patch_rate=before_patch_rate,
+            after_patch_rate=after_patch_rate,
+            patches_applied=len(ordered_patches),
+            remaining_risks=remaining_risks,
+        ),
+        "",
+        "- Key numbers:",
         f"- Initial violation rate: {before_patch_rate:.1%}",
         f"- Final violation rate: {after_patch_rate:.1%}",
+        f"- Violation rate reduction: {rate_delta:.1%}",
         f"- Vulnerabilities mitigated: {_format_categories(mitigated_categories)}",
         f"- Vulnerabilities remaining: {_format_categories(remaining_risks)}",
+        "",
+        "## Before vs After",
+        "",
+        "| Metric | Before patching | After patching | Change |",
+        "| --- | ---: | ---: | ---: |",
+        f"| Violation rate | {before_patch_rate:.1%} | {after_patch_rate:.1%} | {_format_rate_change(rate_delta)} |",
+        f"| Violations | {baseline_violations} | {summary.violations} | {_format_count_change(summary.violations - baseline_violations)} |",
+        f"| Safe responses | {baseline_safe} | {summary.safe} | {_format_count_change(summary.safe - baseline_safe)} |",
+        f"| Errors | {baseline_errors} | {summary.errors} | {_format_count_change(summary.errors - baseline_errors)} |",
+        "",
+        "## Vulnerability Counts",
+        "",
+        "| Count | Value |",
+        "| --- | ---: |",
+        f"| Vulnerability categories tested | {len(ordered_findings)} |",
+        f"| Categories with baseline violations | {len(risky_findings)} |",
+        f"| Baseline violations | {baseline_violations} |",
+        f"| Final unresolved violations | {summary.violations} |",
+        f"| Categories mitigated | {len(mitigated_categories)} |",
+        f"| Remaining risk items | {len(remaining_risks)} |",
         "",
         "## Metrics",
         "",
@@ -77,7 +132,7 @@ def generate_markdown_report(
         "| --- | ---: |",
         f"| Total attacks | {summary.total_attacks} |",
         f"| Completed attacks | {summary.completed_attacks} |",
-        f"| Baseline violations | {_baseline_violation_count(summary, before_patch_rate)} |",
+        f"| Baseline violations | {baseline_violations} |",
         f"| Final unresolved violations | {summary.violations} |",
         f"| Safe responses | {summary.safe} |",
         f"| Inconclusive results | {summary.inconclusive} |",
@@ -129,7 +184,7 @@ def generate_markdown_report(
                 lines.append("- Representative examples: none captured")
             lines.append("")
 
-    lines.extend(["", "## Proposed Patches", ""])
+    lines.extend(["", "## Patches Applied", ""])
     if not ordered_patches:
         lines.append("No prompt patches were proposed.")
     else:
@@ -172,8 +227,24 @@ def generate_markdown_report(
                 f"{len(result.mitigated_attack_ids)} | "
                 f"{len(result.remaining_attack_ids)} | "
                 f"{result.errors} | "
-                f"{result.improvement:.1%} |"
+                f"{result.violation_rate_reduction:.1%} |"
             )
+        lines.extend(["", "### Verification Evidence", ""])
+        for result in ordered_verification:
+            if not result.evidence:
+                lines.append(f"- {result.patch_id}: no evidence captured.")
+                continue
+            for evidence in result.evidence:
+                outcome = "mitigated" if evidence.mitigated else "unresolved"
+                lines.append(
+                    f"- {evidence.attack_id}: baseline violation -> "
+                    f"patched {evidence.patched_verdict} ({outcome}). "
+                    f"Evidence: {evidence.reason}"
+                )
+                if evidence.patched_response_excerpt:
+                    lines.append(
+                        f"  Patched response excerpt: {evidence.patched_response_excerpt}"
+                    )
 
     lines.extend(["", "## Remaining Risks", ""])
     if not remaining_risks:
@@ -190,6 +261,9 @@ def generate_markdown_report(
             "```text",
             f"initial_violation_rate={before_patch_rate:.6f}",
             f"final_violation_rate={after_patch_rate:.6f}",
+            f"violation_rate_reduction={rate_delta:.6f}",
+            f"baseline_violations={baseline_violations}",
+            f"final_unresolved_violations={summary.violations}",
             f"patches_applied={len(ordered_patches)}",
             f"verification_results={len(ordered_verification)}",
             f"remaining_risks={len(remaining_risks)}",
@@ -198,6 +272,40 @@ def generate_markdown_report(
     )
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _executive_summary(
+    *,
+    status: str,
+    total_attacks: int,
+    completed_attacks: int,
+    baseline_violations: int,
+    final_violations: int,
+    before_patch_rate: float,
+    after_patch_rate: float,
+    patches_applied: int,
+    remaining_risks: list[str],
+) -> str:
+    """Create a deterministic executive summary paragraph."""
+
+    tested = (
+        f"RedShield completed {completed_attacks} of {total_attacks} generated "
+        "adversarial checks"
+    )
+    outcome = (
+        f"and reduced the violation rate from {before_patch_rate:.1%} to "
+        f"{after_patch_rate:.1%}."
+    )
+    counts = (
+        f"Baseline violations moved from {baseline_violations} to "
+        f"{final_violations} unresolved violation(s) after applying "
+        f"{patches_applied} patch(es)."
+    )
+    risk = (
+        f"The scan finished with status `{status}` and "
+        f"{len(remaining_risks)} remaining risk item(s)."
+    )
+    return f"{tested} {outcome} {counts} {risk}"
 
 
 def _after_patch_violation_rate(
@@ -217,6 +325,57 @@ def _after_patch_violation_rate(
     )
     unretested_baseline_violations = max(summary.violations - retested, 0)
     return (unresolved + unretested_baseline_violations) / summary.completed_attacks
+
+
+def _mitigation_label(*, before_patch_rate: float, after_patch_rate: float) -> str:
+    """Return a demo-friendly before/after outcome label."""
+
+    if before_patch_rate == 0 and after_patch_rate == 0:
+        return "No violations detected"
+    if after_patch_rate == 0:
+        return "All detected violations mitigated"
+    if after_patch_rate < before_patch_rate:
+        return "Risk reduced with remaining exposure"
+    if after_patch_rate == before_patch_rate:
+        return "No measured risk reduction"
+    return "Risk increased during verification"
+
+
+def _format_rate_change(delta: float) -> str:
+    """Format a before/after rate delta for markdown tables."""
+
+    if delta > 0:
+        return f"-{delta:.1%}"
+    if delta < 0:
+        return f"+{abs(delta):.1%}"
+    return "0.0%"
+
+
+def _format_count_change(delta: int) -> str:
+    """Format a before/after count delta for markdown tables."""
+
+    if delta > 0:
+        return f"+{delta}"
+    if delta < 0:
+        return str(delta)
+    return "0"
+
+
+def _baseline_safe_count(
+    *,
+    summary: SafetySummary,
+    baseline_violations: int,
+    baseline_errors: int,
+) -> int:
+    """Estimate baseline safe count from completed attacks and baseline outcomes."""
+
+    return max(
+        summary.completed_attacks
+        - baseline_violations
+        - summary.inconclusive
+        - baseline_errors,
+        0,
+    )
 
 
 def _format_categories(categories: list[str]) -> str:

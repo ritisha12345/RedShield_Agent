@@ -6,7 +6,7 @@ from typing import get_args
 from agent.analyzer import analyze_results
 from agent.attacker import _attacker_system_prompt
 from agent.judge import _judge_system_prompt
-from agent.patcher import _CATEGORY_FIXES
+from agent.patcher import _patcher_system_prompt
 from models.phase1 import VULNERABILITY_CATEGORIES, VulnerabilityCategory
 
 
@@ -22,18 +22,15 @@ class CategoryConsistencyTests(unittest.TestCase):
             list(VULNERABILITY_CATEGORIES),
         )
 
-    def test_patcher_has_specific_fix_for_every_category(self) -> None:
-        self.assertEqual(set(_CATEGORY_FIXES), set(VULNERABILITY_CATEGORIES))
-        for category in VULNERABILITY_CATEGORIES:
-            self.assertTrue(_CATEGORY_FIXES[category].strip())
-
-    def test_attacker_and_judge_prompts_name_all_categories(self) -> None:
+    def test_agent_prompts_name_all_categories(self) -> None:
         attacker_prompt = _attacker_system_prompt()
         judge_prompt = _judge_system_prompt()
+        patcher_prompt = _patcher_system_prompt()
 
         for category in VULNERABILITY_CATEGORIES:
             self.assertIn(category, attacker_prompt)
             self.assertIn(category, judge_prompt)
+            self.assertIn(category, patcher_prompt)
 
 
 if __name__ == "__main__":
