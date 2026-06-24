@@ -67,6 +67,11 @@ def generate_markdown_report(
         before_patch_rate=before_patch_rate,
         after_patch_rate=after_patch_rate,
     )
+    effectiveness_counts = _patch_effectiveness_counts(summary.evidence_records)
+    effective_retests = effectiveness_counts.get("mitigated", 0)
+    ineffective_retests = sum(
+        count for status, count in effectiveness_counts.items() if status != "mitigated"
+    )
 
     lines = [
         "# RedShield Safety Report",
@@ -78,6 +83,8 @@ def generate_markdown_report(
         f"- Violation rate: {before_patch_rate:.1%} -> {after_patch_rate:.1%}",
         f"- Patches applied: {len(ordered_patches)}",
         f"- Remaining risks: {len(remaining_risks)}",
+        f"- Effective retests: {effective_retests}",
+        f"- Ineffective retests: {ineffective_retests}",
         "",
         "## Report Metadata",
         "",
@@ -139,6 +146,8 @@ def generate_markdown_report(
         f"| Errors | {summary.errors} |",
         f"| Initial violation rate | {before_patch_rate:.1%} |",
         f"| Final violation rate | {after_patch_rate:.1%} |",
+        f"| Effective retests | {effective_retests} |",
+        f"| Ineffective retests | {ineffective_retests} |",
         "",
         "## Category Breakdown",
         "",
@@ -184,6 +193,61 @@ def generate_markdown_report(
                 lines.append("- Representative examples: none captured")
             lines.append("")
 
+    lines.extend(["", "## Evidence Records", ""])
+    if not summary.evidence_records:
+        lines.append("No attack evidence records were captured.")
+    else:
+        for evidence in summary.evidence_records:
+            lines.extend(
+                [
+                    f"### {evidence.attack_id} ({evidence.category})",
+                    "",
+                    f"- Verdict: {evidence.verdict}",
+                    f"- Confidence: {evidence.confidence:.2f}",
+                ]
+            )
+            if evidence.severity:
+                lines.append(f"- Severity: {evidence.severity}")
+            if evidence.violated_rule:
+                lines.append(f"- Violated rule: {evidence.violated_rule}")
+            lines.extend(
+                [
+                    f"- Judge reason: {evidence.judge_reason}",
+                    "- Attack prompt:",
+                    "```text",
+                    evidence.attack_prompt,
+                    "```",
+                    "- Target response excerpt:",
+                    "```text",
+                    evidence.target_response_excerpt or "No response text captured.",
+                    "```",
+                ]
+            )
+            if evidence.patch_id:
+                lines.extend(
+                    [
+                        f"- Verification patch: {evidence.patch_id}",
+                        f"- Patched prompt passed: {_format_optional_bool(evidence.patched_prompt_provided)}",
+                        f"- Verification verdict: {evidence.verification_verdict}",
+                        f"- Response changed after patch: {_format_optional_bool(evidence.verification_response_changed)}",
+                        f"- Patch effectiveness: {evidence.patch_effectiveness_status or 'n/a'}",
+                        f"- Failure reason: {evidence.patch_failure_reason or 'none'}",
+                        f"- Severity change: {evidence.severity_changed or 'n/a'}",
+                        f"- Mitigated: {'yes' if evidence.mitigated else 'no'}",
+                        f"- Verification reason: {evidence.verification_reason or 'none'}",
+                    ]
+                )
+                if evidence.verification_response_excerpt:
+                    lines.extend(
+                        [
+                            "- Verification response excerpt:",
+                            "```text",
+                            evidence.verification_response_excerpt,
+                            "```",
+                        ]
+                    )
+            lines.append("")
+
     lines.extend(["", "## Patches Applied", ""])
     if not ordered_patches:
         lines.append("No prompt patches were proposed.")
@@ -213,6 +277,17 @@ def generate_markdown_report(
             [
                 f"- Vulnerabilities mitigated: {_format_categories(mitigated_categories)}",
                 f"- Vulnerabilities remaining: {_format_categories(remaining_risks)}",
+                "",
+                "### Patch Effectiveness",
+                "",
+                "| Status | Count |",
+                "| --- | ---: |",
+            ]
+        )
+        for status, count in sorted(effectiveness_counts.items()):
+            lines.append(f"| {_humanize_status(status)} | {count} |")
+        lines.extend(
+            [
                 "",
                 "| Patch | Category | Retested | Mitigated | Remaining | Errors | Improvement |",
                 "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
@@ -266,6 +341,9 @@ def generate_markdown_report(
             f"final_unresolved_violations={summary.violations}",
             f"patches_applied={len(ordered_patches)}",
             f"verification_results={len(ordered_verification)}",
+            f"evidence_records={len(summary.evidence_records)}",
+            f"effective_retests={effective_retests}",
+            f"ineffective_retests={ineffective_retests}",
             f"remaining_risks={len(remaining_risks)}",
             "```",
         ]
@@ -382,6 +460,33 @@ def _format_categories(categories: list[str]) -> str:
     """Format a category list for terminal markdown."""
 
     return ", ".join(categories) if categories else "none"
+
+
+def _format_optional_bool(value: bool | None) -> str:
+    """Format optional diagnostic booleans for reports."""
+
+    if value is None:
+        return "n/a"
+    return "yes" if value else "no"
+
+
+def _patch_effectiveness_counts(evidence_records: list) -> dict[str, int]:
+    """Count patch verification diagnoses captured on evidence records."""
+
+    counts: dict[str, int] = {}
+    for evidence in evidence_records:
+        if not evidence.patch_id or not evidence.patch_effectiveness_status:
+            continue
+        counts[evidence.patch_effectiveness_status] = (
+            counts.get(evidence.patch_effectiveness_status, 0) + 1
+        )
+    return counts
+
+
+def _humanize_status(status: str) -> str:
+    """Format a compact status label for report tables."""
+
+    return status.replace("_", " ")
 
 
 def _remaining_categories(

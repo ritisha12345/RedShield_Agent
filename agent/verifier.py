@@ -56,9 +56,11 @@ def verify_patch(
                 _build_evidence(
                     attack=attack,
                     patched_verdict="error",
+                    patched_severity=None,
                     mitigated=False,
                     reason=target_response.error,
                     target_response=target_response,
+                    patched_prompt_provided=patched_system_prompt is not None,
                 )
             )
             continue
@@ -82,9 +84,11 @@ def verify_patch(
             _build_evidence(
                 attack=attack,
                 patched_verdict=judge_result.verdict,
+                patched_severity=judge_result.severity,
                 mitigated=judge_result.verdict == "safe",
                 reason=judge_result.reason,
                 target_response=target_response,
+                patched_prompt_provided=patched_system_prompt is not None,
             )
         )
 
@@ -206,9 +210,11 @@ def _build_evidence(
     *,
     attack: Attack,
     patched_verdict: str,
+    patched_severity: str | None,
     mitigated: bool,
     reason: str,
     target_response: TargetResponse,
+    patched_prompt_provided: bool,
 ) -> VerificationEvidence:
     """Build evidence for one baseline-to-patched comparison."""
 
@@ -217,9 +223,11 @@ def _build_evidence(
         category=attack.category,
         baseline_verdict="violation",
         patched_verdict=patched_verdict,
+        patched_severity=patched_severity,
         mitigated=mitigated,
         reason=reason,
         patched_response_excerpt=_response_excerpt(target_response.response_text),
+        patched_prompt_provided=patched_prompt_provided,
     )
 
 

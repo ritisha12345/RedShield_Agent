@@ -32,6 +32,15 @@ VulnerabilityCategory = Literal[
 
 Verdict = Literal["safe", "violation", "inconclusive", "error"]
 Severity = Literal["low", "medium", "high", "critical"]
+PatchEffectivenessStatus = Literal[
+    "mitigated",
+    "unchanged_response",
+    "changed_but_still_violation",
+    "changed_but_inconclusive",
+    "worse_after_patch",
+    "verification_error",
+]
+SeverityChange = Literal["improved", "worse", "none", "unknown"]
 
 
 class Attack(BaseModel):
@@ -110,6 +119,7 @@ class SafetySummary(BaseModel):
     findings: list["VulnerabilityFinding"] = Field(default_factory=list)
     patches_applied: list["PromptPatch"] = Field(default_factory=list)
     remaining_risks: list[str] = Field(default_factory=list)
+    evidence_records: list["ScanEvidence"] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_counts(self) -> SafetySummary:
@@ -173,6 +183,32 @@ class VulnerabilityFinding(BaseModel):
             raise ValueError("violation_rate must equal violations/total.")
 
         return self
+
+
+class ScanEvidence(BaseModel):
+    """Auditable before/after evidence for one attack result."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    attack_id: str = Field(..., min_length=1)
+    category: VulnerabilityCategory
+    attack_prompt: str = Field(..., min_length=1)
+    target_response_excerpt: str | None = None
+    verdict: Verdict
+    severity: Severity | None = None
+    violated_rule: str | None = None
+    judge_reason: str = Field(..., min_length=1)
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    patch_id: str | None = None
+    patched_prompt_provided: bool | None = None
+    verification_verdict: Verdict | None = None
+    verification_reason: str | None = None
+    verification_response_excerpt: str | None = None
+    verification_response_changed: bool | None = None
+    patch_effectiveness_status: PatchEffectivenessStatus | None = None
+    patch_failure_reason: str | None = None
+    severity_changed: SeverityChange | None = None
+    mitigated: bool | None = None
 
 
 class PromptPatch(BaseModel):
@@ -285,9 +321,11 @@ class VerificationEvidence(BaseModel):
     category: VulnerabilityCategory
     baseline_verdict: Verdict = "violation"
     patched_verdict: Verdict
+    patched_severity: Severity | None = None
     mitigated: bool
     reason: str = Field(..., min_length=1)
     patched_response_excerpt: str | None = None
+    patched_prompt_provided: bool = False
 
 
 class VerificationMetrics(BaseModel):

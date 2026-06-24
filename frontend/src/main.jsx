@@ -35,6 +35,7 @@ const DEFAULT_FORM = {
   max_rounds: 2,
   mock_target_response: "Mock target response: request handled safely."
 };
+const SETUP_FORM_STORAGE_KEY = "redshield:setupForm";
 
 function App() {
   const [route, setRoute] = useState(readRoute);
@@ -90,9 +91,13 @@ function App() {
 }
 
 function SetupPage({ onScanCreated }) {
-  const [form, setForm] = useState(DEFAULT_FORM);
+  const [form, setForm] = useState(readStoredSetupForm);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    window.localStorage.setItem(SETUP_FORM_STORAGE_KEY, JSON.stringify(form));
+  }, [form]);
 
   const updateField = (field, value) => {
     setForm((current) => ({ ...current, [field]: value }));
@@ -406,6 +411,8 @@ function ReportPage({ scanId }) {
   const findings = summary?.findings || [];
   const patches = summary?.patches_applied || [];
   const remainingRisks = summary?.remaining_risks || [];
+  const evidenceRecords = summary?.evidence_records || [];
+  const patchEffectiveness = buildPatchEffectiveness(evidenceRecords);
 
   return (
     <section className="page-stack">
@@ -433,6 +440,11 @@ function ReportPage({ scanId }) {
             />
             <Metric label="Remaining risks" value={remainingRisks.length} />
             <Metric label="Patches applied" value={patches.length} />
+            <Metric label="Effective retests" value={patchEffectiveness.effective} />
+            <Metric
+              label="Ineffective retests"
+              value={patchEffectiveness.ineffective}
+            />
           </div>
 
           <div className="report-grid">
@@ -461,6 +473,14 @@ function ReportPage({ scanId }) {
 
           <div className="panel">
             <div className="panel-heading">
+              <h2>Evidence records</h2>
+              <span>{evidenceRecords.length}</span>
+            </div>
+            <EvidenceRecords records={evidenceRecords} />
+          </div>
+
+          <div className="panel">
+            <div className="panel-heading">
               <h2>Final markdown report</h2>
               <span>{scan.status}</span>
             </div>
@@ -471,6 +491,93 @@ function ReportPage({ scanId }) {
         </>
       ) : null}
     </section>
+  );
+}
+
+function EvidenceRecords({ records }) {
+  if (!records.length) {
+    return <p className="muted-text">No attack evidence records captured.</p>;
+  }
+
+  return (
+    <ol className="evidence-list">
+      {records.map((record) => (
+        <li key={record.attack_id}>
+          <div className="evidence-header">
+            <div>
+              <strong>{record.category}</strong>
+              <span>{record.attack_id}</span>
+            </div>
+            <span className={`verdict verdict-${record.verdict}`}>
+              {record.verdict}
+            </span>
+          </div>
+
+          <EvidenceBlock title="Attack" text={record.attack_prompt} />
+          <EvidenceBlock
+            title="Target response"
+            text={record.target_response_excerpt || "No response text captured."}
+          />
+          <EvidenceBlock title="Judge reason" text={record.judge_reason} />
+
+          {record.patch_id ? (
+            <div className="verification-box">
+              <div className="verification-row">
+                <span>Patch</span>
+                <strong>{record.patch_id}</strong>
+              </div>
+              <div className="verification-row">
+                <span>Patched prompt passed</span>
+                <strong>{formatOptionalBool(record.patched_prompt_provided)}</strong>
+              </div>
+              <div className="verification-row">
+                <span>Verification</span>
+                <strong>{record.verification_verdict || "n/a"}</strong>
+              </div>
+              <div className="verification-row">
+                <span>Response changed</span>
+                <strong>
+                  {formatOptionalBool(record.verification_response_changed)}
+                </strong>
+              </div>
+              <div className="verification-row">
+                <span>Patch effectiveness</span>
+                <strong>{humanize(record.patch_effectiveness_status || "n/a")}</strong>
+              </div>
+              <div className="verification-row">
+                <span>Severity change</span>
+                <strong>{record.severity_changed || "n/a"}</strong>
+              </div>
+              {record.patch_failure_reason ? (
+                <EvidenceBlock
+                  title="Patch diagnosis"
+                  text={record.patch_failure_reason}
+                />
+              ) : null}
+              <div className="verification-row">
+                <span>Mitigated</span>
+                <strong>{record.mitigated ? "yes" : "no"}</strong>
+              </div>
+              {record.verification_response_excerpt ? (
+                <EvidenceBlock
+                  title="Verification response"
+                  text={record.verification_response_excerpt}
+                />
+              ) : null}
+            </div>
+          ) : null}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function EvidenceBlock({ title, text }) {
+  return (
+    <div className="evidence-block">
+      <span>{title}</span>
+      <p>{text}</p>
+    </div>
   );
 }
 
@@ -651,6 +758,21 @@ function buildLiveMetrics(events, scan) {
   };
 }
 
+function buildPatchEffectiveness(records) {
+  return records.reduce(
+    (counts, record) => {
+      if (!record.patch_effectiveness_status) {
+        return counts;
+      }
+      if (record.patch_effectiveness_status === "mitigated") {
+        return { ...counts, effective: counts.effective + 1 };
+      }
+      return { ...counts, ineffective: counts.ineffective + 1 };
+    },
+    { effective: 0, ineffective: 0 }
+  );
+}
+
 function isTerminalEvent(type) {
   return type === "scan_completed" || type === "scan_failed";
 }
@@ -685,6 +807,13 @@ function formatTime(value) {
   });
 }
 
+function formatOptionalBool(value) {
+  if (typeof value !== "boolean") {
+    return "n/a";
+  }
+  return value ? "yes" : "no";
+}
+
 function splitLines(value) {
   return value
     .split(/\r?\n/)
@@ -703,6 +832,23 @@ function readRoute() {
     page: page || "setup",
     scanId: scanId || ""
   };
+}
+
+function readStoredSetupForm() {
+  const rawValue = window.localStorage.getItem(SETUP_FORM_STORAGE_KEY);
+  if (!rawValue) {
+    return DEFAULT_FORM;
+  }
+
+  try {
+    const storedForm = JSON.parse(rawValue);
+    if (!storedForm || typeof storedForm !== "object") {
+      return DEFAULT_FORM;
+    }
+    return { ...DEFAULT_FORM, ...storedForm };
+  } catch {
+    return DEFAULT_FORM;
+  }
 }
 
 function navigate(path) {

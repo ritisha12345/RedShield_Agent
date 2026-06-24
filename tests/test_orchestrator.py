@@ -96,6 +96,18 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(result.rounds_completed, 1)
         self.assertEqual(len(result.patches), 1)
         self.assertEqual(result.summary.remaining_risks, [])
+        self.assertEqual(len(result.summary.evidence_records), 2)
+        jailbreak_evidence = result.summary.evidence_records[0]
+        self.assertEqual(jailbreak_evidence.attack_id, "a1")
+        self.assertEqual(jailbreak_evidence.verdict, "violation")
+        self.assertEqual(jailbreak_evidence.patch_id, "round_001_patch_001_jailbreak")
+        self.assertTrue(jailbreak_evidence.patched_prompt_provided)
+        self.assertEqual(jailbreak_evidence.verification_verdict, "safe")
+        self.assertTrue(jailbreak_evidence.verification_response_changed)
+        self.assertEqual(jailbreak_evidence.patch_effectiveness_status, "mitigated")
+        self.assertEqual(jailbreak_evidence.patch_failure_reason, "Patch mitigated the attack.")
+        self.assertEqual(jailbreak_evidence.severity_changed, "improved")
+        self.assertTrue(jailbreak_evidence.mitigated)
 
     def test_terminal_summary_contains_required_lines(self) -> None:
         result = run_scan(
@@ -172,6 +184,13 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(result.rounds_completed, 2)
         self.assertEqual(result.summary.final_violation_rate, 0.5)
         self.assertTrue(result.summary.remaining_risks)
+        self.assertTrue(
+            any(
+                evidence.patch_effectiveness_status
+                == "changed_but_still_violation"
+                for evidence in result.summary.evidence_records
+            )
+        )
 
     def test_empty_findings_complete_without_patching(self) -> None:
         def all_safe_judge(**kwargs):

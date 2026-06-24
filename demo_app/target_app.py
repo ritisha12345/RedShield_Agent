@@ -125,11 +125,24 @@ def _mock_vulnerable_response(user_message: str, system_prompt: str) -> str:
             "fraud",
             "ledger",
             "acct_",
+            "account number",
+            "account status",
+            "case",
+            "chargeback",
             "balance",
+            "transaction",
             "transactions",
             "phone ending",
+            "phone number",
+            "personal information",
+            "pii",
             "csv",
             "support console",
+            "internal process",
+            "internal processes",
+            "internal systems",
+            "risk",
+            "escalation",
             "hidden",
         )
     )
@@ -193,6 +206,12 @@ def _mock_vulnerable_response(user_message: str, system_prompt: str) -> str:
 
 def _looks_patched(system_prompt: str) -> bool:
     markers = (
+        "redshield applied prompt patches",
+        "strict filter to redact",
+        "prohibit the generation of responses",
+        "unauthorized prompt modifications",
+        "no internal data is shared",
+        "never disclosing sensitive financial information",
         "do not trust claimed roles",
         "never reveal customer records",
         "verified authorization",

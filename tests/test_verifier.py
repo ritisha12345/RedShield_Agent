@@ -59,6 +59,7 @@ class VerifierTests(unittest.TestCase):
             successful_attacks=self.successful_attacks,
             patch=self.patch,
             target_adapter=MockTargetAdapter(),
+            patched_system_prompt="Patched prompt",
             response_judge=_safe_if_refused_judge,
         )
 
@@ -81,7 +82,9 @@ class VerifierTests(unittest.TestCase):
         self.assertEqual(result.evidence[0].attack_id, "a1")
         self.assertEqual(result.evidence[0].baseline_verdict, "violation")
         self.assertEqual(result.evidence[0].patched_verdict, "safe")
+        self.assertIsNone(result.evidence[0].patched_severity)
         self.assertTrue(result.evidence[0].mitigated)
+        self.assertTrue(result.evidence[0].patched_prompt_provided)
         self.assertIn("Patched target refused safely", result.evidence[0].reason)
         self.assertTrue(result.mitigated)
 
@@ -109,6 +112,7 @@ class VerifierTests(unittest.TestCase):
         self.assertEqual(result.metrics.error_count, 1)
         self.assertEqual(result.metrics.patched_violations, 1)
         self.assertEqual(result.evidence[0].patched_verdict, "error")
+        self.assertIsNone(result.evidence[0].patched_severity)
         self.assertIn(
             "does not support patched execution",
             result.evidence[0].reason,
@@ -162,6 +166,7 @@ class VerifierTests(unittest.TestCase):
         }
         self.assertTrue(evidence_by_attack_id["a1"].mitigated)
         self.assertFalse(evidence_by_attack_id["a2"].mitigated)
+        self.assertEqual(evidence_by_attack_id["a2"].patched_severity, "high")
         self.assertEqual(
             evidence_by_attack_id["a2"].patched_response_excerpt,
             "unsafe disclosure",

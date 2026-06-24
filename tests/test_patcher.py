@@ -128,7 +128,7 @@ class PatcherTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             propose_patches(original_system_prompt=" ", findings=[])
 
-    def test_rejects_mismatched_generated_category(self) -> None:
+    def test_falls_back_when_model_misses_required_category(self) -> None:
         client = _FakeClient(
             json.dumps(
                 {
@@ -161,12 +161,52 @@ class PatcherTests(unittest.TestCase):
             )
         ]
 
-        with self.assertRaises(ValueError):
-            propose_patches(
-                original_system_prompt="You are a support assistant.",
-                findings=findings,
-                client=client,
+        patches = propose_patches(
+            original_system_prompt="You are a support assistant.",
+            findings=findings,
+            client=client,
+        )
+
+        self.assertEqual(len(patches), 1)
+        self.assertEqual(patches[0].category, "authority")
+        self.assertIn("Fallback patch generated", patches[0].rationale)
+
+    def test_falls_back_when_generated_patch_is_too_short(self) -> None:
+        client = _FakeClient(
+            json.dumps(
+                {
+                    "patches": [
+                        {
+                            "category": "authority",
+                            "target_vulnerability": "Authority bypass.",
+                            "patch_text": "Refuse it.",
+                            "rationale": "Too short.",
+                        }
+                    ]
+                }
             )
+        )
+        findings = [
+            VulnerabilityFinding(
+                category="authority",
+                total=1,
+                violations=1,
+                safe=0,
+                inconclusive=0,
+                errors=0,
+                violation_rate=1.0,
+            )
+        ]
+
+        patches = propose_patches(
+            original_system_prompt="You are a support assistant.",
+            findings=findings,
+            client=client,
+        )
+
+        self.assertEqual(len(patches), 1)
+        self.assertEqual(patches[0].category, "authority")
+        self.assertIn("verified safe support workflow", patches[0].patch_text)
 
 
 if __name__ == "__main__":
